@@ -11,6 +11,7 @@ import datetime
 import shutil
 import webbrowser
 import logging
+import glob
 
 # 全局 system prompt，作为批改作文的基础指令
 SYSTEM_PROMPT = (
@@ -32,35 +33,15 @@ logging.basicConfig(
     encoding="utf-8"
 )
 
-# Windows 下自动检测 Tesseract-OCR 路径，未安装则提示下载
-if sys.platform.startswith("win"):
-    tesseract_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-    if os.path.exists(tesseract_path):
-        pytesseract.pytesseract.tesseract_cmd = tesseract_path
-    else:
-        answer = messagebox.askyesno(
-            "Tesseract-OCR未安装",
-            "未检测到Tesseract-OCR，是否自动下载官方安装包？\n\n（下载后请手动安装，并确保安装了中文语言包）"
-        )
-        if answer:
-            # 官方下载地址（可根据需要更换为国内镜像）
-            url = "https://github.com/tesseract-ocr/tesseract/releases/download/5.3.4/tesseract-5.3.4.20231005-win64-setup.exe"
-            try:
-                import urllib.request
-                save_path = os.path.join(os.getcwd(), "tesseract-ocr-setup.exe")
-                messagebox.showinfo("下载中", f"正在下载Tesseract-OCR安装包到：\n{save_path}\n\n请稍候...")
-                urllib.request.urlretrieve(url, save_path)
-                messagebox.showinfo("下载完成", f"下载完成！请双击安装包进行安装。\n\n安装完成后请重启本程序。")
-                os.startfile(save_path)
-            except Exception as e:
-                messagebox.showerror("下载失败", f"自动下载失败，请手动访问官网下载。\n\n即将打开官网页面。")
-                webbrowser.open("https://github.com/tesseract-ocr/tesseract")
-                sys.exit(1)
-        else:
-            webbrowser.open("https://github.com/tesseract-ocr/tesseract")
-            sys.exit(1)
-
 CONFIG_FILE = "aeg_config.ini"
+
+def find_tesseract_on_windows():
+    # 全盘搜索 tesseract.exe（只搜 C 盘，速度快些）
+    for root_dir in ["C:\\"]:
+        for path in glob.glob(os.path.join(root_dir, "**", "tesseract.exe"), recursive=True):
+            if os.path.exists(path):
+                return path
+    return None
 
 class EssayGraderApp:
     def __init__(self, root):
@@ -74,7 +55,9 @@ class EssayGraderApp:
         self.prompt_criteria = tk.StringVar()
         self.image_paths = []
         self.log_var = tk.StringVar()
+        self.tesseract_path = None
         self.load_config()
+        self.setup_tesseract_path()
         self.create_gui()
         # 初始化评分标准到文本框
         self.text_criteria.delete("1.0", "end")
@@ -95,6 +78,7 @@ class EssayGraderApp:
                 raw_criteria = self.config.get("PROMPT", "criteria", fallback="")
                 raw_criteria = raw_criteria.replace('\\n', '\n')
                 self.prompt_criteria.set(raw_criteria)
+                self.tesseract_path = self.config.get("OCR", "tesseract_path", fallback=None)
             else:
                 raise Exception("aeg_config.ini不存在")
         except Exception as e:
@@ -121,6 +105,8 @@ class EssayGraderApp:
             self.config.add_section("API")
         if not self.config.has_section("PROMPT"):
             self.config.add_section("PROMPT")
+        if not self.config.has_section("OCR"):
+            self.config.add_section("OCR")
         # 用\n替换换行，保存为一行
         criteria = self.prompt_criteria.get().replace('\n', '\\n')
         self.config.set("API", "type", self.api_type.get())
@@ -128,8 +114,25 @@ class EssayGraderApp:
         self.config.set("API", "deepthink", str(self.deepseek_deepthink.get()))
         self.config.set("API", "savemoney", str(self.save_money_mode.get()))
         self.config.set("PROMPT", "criteria", criteria)
+        if self.tesseract_path:
+            self.config.set("OCR", "tesseract_path", self.tesseract_path)
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             self.config.write(f)
+
+    def setup_tesseract_path(self):
+        if sys.platform.startswith("win"):
+            if self.tesseract_path and os.path.exists(self.tesseract_path):
+                pytesseract.pytesseract.tesseract_cmd = self.tesseract_path
+            else:
+                # 没有配置或路径失效，自动搜索
+                found = find_tesseract_on_windows()
+                if found:
+                    self.tesseract_path = found
+                    pytesseract.pytesseract.tesseract_cmd = found
+                    self.save_config()
+                else:
+                    messagebox.showerror("Tesseract-OCR未找到", "未能自动找到Tesseract-OCR，请手动安装并配置。")
+                    sys.exit(1)
 
     def create_gui(self):
         # 设置窗口默认大小更大一些
@@ -355,6 +358,8 @@ class EssayGraderApp:
         self.image_paths = []
 
     def ocr_image(self, img_path):
+        if sys.platform.startswith("win") and self.tesseract_path:
+            pytesseract.pytesseract.tesseract_cmd = self.tesseract_path
         try:
             img = Image.open(img_path)
             # 自动尝试中英文混合识别
