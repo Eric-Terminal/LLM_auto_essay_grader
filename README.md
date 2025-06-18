@@ -68,3 +68,5 @@ python auto_essay_grader.py
 ---
 
 如有建议或问题，欢迎提交 Issue！
+
+## 持续优化更新（OCR识别手写体正确率偏低）
